@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
+from io import BytesIO
 from sklearn.cluster import KMeans
 import plotly.express as px
 
@@ -18,25 +19,72 @@ from reportlab.pdfbase.ttfonts import TTFont
 pdfmetrics.registerFont(TTFont("KoreanFont", "NotoSansKR-Regular.ttf"))
 
 # =========================
-# 크롤링 함수
+# 크롤링 (텍스트 + 이미지)
 # =========================
 def crawl(url):
     try:
         res = requests.get(url)
         soup = BeautifulSoup(res.text, "html.parser")
         text = soup.get_text()
-        return text[:1000]
+
+        # 이미지 URL 수집
+        imgs = [img.get("src") for img in soup.find_all("img") if img.get("src")]
+
+        return text[:2000], imgs[:5]
     except:
-        return ""
+        return "", []
 
 # =========================
-# 간단 라벨링
+# 고급 라벨링 (텍스트 기반)
 # =========================
 def labeling(text):
-    layout = "Grid" if "grid" in text.lower() else "Single"
-    visual = "Gradient" if "gradient" in text.lower() else "Minimal"
-    tone = "Dark" if "dark" in text.lower() else "Light"
+    text = text.lower()
+
+    layout = "Grid" if any(k in text for k in ["grid", "column", "flex", "layout"]) else "Single"
+
+    visual = "Gradient" if any(k in text for k in ["gradient", "rgb", "color", "background"]) else "Minimal"
+
+    tone = "Dark" if any(k in text for k in ["dark", "black", "#000"]) else "Light"
+
     return layout, visual, tone
+
+# =========================
+# HTML 구조 분석
+# =========================
+def analyze_html(url):
+    try:
+        res = requests.get(url)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        divs = len(soup.find_all("div"))
+        imgs = len(soup.find_all("img"))
+
+        complexity = "Complex" if divs > 100 else "Simple"
+        media = "Image-heavy" if imgs > 20 else "Text-heavy"
+
+        return complexity, media
+    except:
+        return "Unknown", "Unknown"
+
+# =========================
+# 이미지 분석
+# =========================
+def analyze_image(img_url):
+    try:
+        if not img_url.startswith("http"):
+            return "Unknown"
+
+        response = requests.get(img_url)
+        img = Image.open(BytesIO(response.content))
+
+        colors = img.getcolors(1000000)
+
+        if colors and len(colors) > 200:
+            return "Rich"
+        else:
+            return "Minimal"
+    except:
+        return "Unknown"
 
 # =========================
 # 클러스터링
@@ -90,9 +138,12 @@ def create_pdf(report_text):
 # =========================
 # UI
 # =========================
-st.title("AI 디자인 분석기")
+st.title("AI 디자인 분석기 (고급 버전)")
 
 urls = st.text_area("URL 여러개 입력 (줄바꿈)")
+
+if "report" not in st.session_state:
+    st.session_state.report = None
 
 if st.button("분석 시작"):
     url_list = urls.split("\n")
@@ -100,29 +151,30 @@ if st.button("분석 시작"):
     data = []
 
     for url in url_list:
-        text = crawl(url)
-        layout, visual, tone = labeling(text)
-        data.append([layout, visual, tone])
+        text, imgs = crawl(url)
 
-    df = pd.DataFrame(data, columns=["Layout", "Visual", "Tone"])
+        layout, visual, tone = labeling(text)
+        complexity, media = analyze_html(url)
+
+        img_result = "Unknown"
+        if imgs:
+            img_result = analyze_image(imgs[0])
+
+        data.append([layout, visual, tone, complexity, media, img_result])
+
+    df = pd.DataFrame(data, columns=["Layout", "Visual", "Tone", "Complexity", "Media", "Image"])
 
     df = clustering(df)
 
     st.write(df)
 
-    # 시각화
     fig = px.scatter(df, x="Layout", y="Visual", color="Cluster")
     st.plotly_chart(fig)
 
-    # 분석
     cluster_summary = interpret_cluster(df)
     trend = analyze_trend(df)
 
-    st.write("클러스터 분석", cluster_summary)
-    st.write("트렌드", trend)
-
-    # 리포트 생성
-    report = "AI 디자인 분석 리포트\n\n"
+    report = "AI 디자인 분석 리포트 (고급)\n\n"
 
     report += "[클러스터 분석]\n"
     for k, v in cluster_summary.items():
@@ -136,10 +188,13 @@ if st.button("분석 시작"):
     report += f"Visual: {trend['Visual']}\n"
     report += f"Tone: {trend['Tone']}\n"
 
-    st.text(report)
+    st.session_state.report = report
 
-    # PDF 버튼
+if st.session_state.report:
+    st.text(st.session_state.report)
+
     if st.button("PDF 생성"):
-        pdf_file = create_pdf(report)
+        pdf_file = create_pdf(st.session_state.report)
+
         with open(pdf_file, "rb") as f:
             st.download_button("PDF 다운로드", f, "report.pdf")
