@@ -1,8 +1,7 @@
 streamlit
 pandas
-scikit-learn
-plotly
-beautifulsoup4
 requests
-Pillow
-reportlab
+beautifulsoup4
+matplotlib
+scikit-learn
+fpdf
