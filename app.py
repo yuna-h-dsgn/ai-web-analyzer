@@ -2,199 +2,246 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image
-from io import BytesIO
+import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
-import plotly.express as px
+from fpdf import FPDF
 
-# PDF
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+# ---------------------------
+# 기본 설정
+# ---------------------------
+st.set_page_config(page_title="AI Design Analyzer", layout="wide")
 
-# =========================
-# 한글 폰트 등록
-# =========================
-pdfmetrics.registerFont(TTFont("KoreanFont", "NotoSansKR-Regular.ttf"))
+# ---------------------------
+# 스타일 (SaaS 느낌)
+# ---------------------------
+st.markdown("""
+<style>
+body {
+    background-color: #ffffff;
+}
+.block {
+    padding:16px;
+    border-radius:10px;
+    border:1px solid #e5e7eb;
+    margin-bottom:10px;
+    background:white;
+}
+.small {
+    font-size:13px;
+    color:gray;
+}
+.big {
+    font-size:22px;
+    font-weight:600;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# =========================
-# 크롤링 (텍스트 + 이미지)
-# =========================
-def crawl(url):
+# ---------------------------
+# 블록 UI
+# ---------------------------
+def block(title, value):
+    st.markdown(f"""
+    <div class="block">
+        <div class="small">{title}</div>
+        <div class="big">{value}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ---------------------------
+# URL 크롤링
+# ---------------------------
+def analyze_url(url):
     try:
-        res = requests.get(url)
+        res = requests.get(url, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
-        text = soup.get_text()
 
-        # 이미지 URL 수집
-        imgs = [img.get("src") for img in soup.find_all("img") if img.get("src")]
+        texts = soup.get_text().lower()
 
-        return text[:2000], imgs[:5]
-    except:
-        return "", []
+        # 간단 룰 기반 분석
+        layout = "Grid" if "grid" in texts else "Single"
+        complexity = len(texts)
 
-# =========================
-# 고급 라벨링 (텍스트 기반)
-# =========================
-def labeling(text):
-    text = text.lower()
-
-    layout = "Grid" if any(k in text for k in ["grid", "column", "flex", "layout"]) else "Single"
-
-    visual = "Gradient" if any(k in text for k in ["gradient", "rgb", "color", "background"]) else "Minimal"
-
-    tone = "Dark" if any(k in text for k in ["dark", "black", "#000"]) else "Light"
-
-    return layout, visual, tone
-
-# =========================
-# HTML 구조 분석
-# =========================
-def analyze_html(url):
-    try:
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        divs = len(soup.find_all("div"))
-        imgs = len(soup.find_all("img"))
-
-        complexity = "Complex" if divs > 100 else "Simple"
-        media = "Image-heavy" if imgs > 20 else "Text-heavy"
-
-        return complexity, media
-    except:
-        return "Unknown", "Unknown"
-
-# =========================
-# 이미지 분석
-# =========================
-def analyze_image(img_url):
-    try:
-        if not img_url.startswith("http"):
-            return "Unknown"
-
-        response = requests.get(img_url)
-        img = Image.open(BytesIO(response.content))
-
-        colors = img.getcolors(1000000)
-
-        if colors and len(colors) > 200:
-            return "Rich"
+        if complexity < 5000:
+            complexity_label = "Low"
+        elif complexity < 20000:
+            complexity_label = "Medium"
         else:
-            return "Minimal"
-    except:
-        return "Unknown"
+            complexity_label = "High"
 
-# =========================
-# 클러스터링
-# =========================
-def clustering(df):
-    df_encoded = pd.get_dummies(df)
-    model = KMeans(n_clusters=3, random_state=42)
-    df["Cluster"] = model.fit_predict(df_encoded)
-    return df
+        style = "Minimal" if "white" in texts else "Visual"
 
-# =========================
-# 클러스터 해석
-# =========================
-def interpret_cluster(df):
-    summary = {}
-    for c in df["Cluster"].unique():
-        subset = df[df["Cluster"] == c]
-        summary[c] = {
-            "Layout": subset["Layout"].mode()[0],
-            "Visual": subset["Visual"].mode()[0],
-            "Tone": subset["Tone"].mode()[0]
+        return {
+            "URL": url,
+            "Layout": layout,
+            "Complexity": complexity_label,
+            "Style": style
         }
-    return summary
 
-# =========================
-# 트렌드 분석
-# =========================
-def analyze_trend(df):
-    return {
-        "Layout": df["Layout"].value_counts().idxmax(),
-        "Visual": df["Visual"].value_counts().idxmax(),
-        "Tone": df["Tone"].value_counts().idxmax()
-    }
+    except:
+        return None
 
-# =========================
-# PDF 생성
-# =========================
-def create_pdf(report_text):
-    doc = SimpleDocTemplate("report.pdf")
-    styles = getSampleStyleSheet()
-    styles["Normal"].fontName = "KoreanFont"
+# ---------------------------
+# URL 자동 수집
+# ---------------------------
+def collect_urls(keyword, num=10):
+    urls = []
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    content = []
-    for line in report_text.split("\n"):
-        content.append(Paragraph(line, styles["Normal"]))
-        content.append(Spacer(1, 10))
+    try:
+        search_url = f"https://www.google.com/search?q={keyword}"
+        res = requests.get(search_url, headers=headers)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-    doc.build(content)
-    return "report.pdf"
+        for a in soup.select("a"):
+            link = a.get("href")
+            if link and "http" in link and "google" not in link:
+                urls.append(link)
 
-# =========================
-# UI
-# =========================
-st.title("AI 디자인 분석기 (고급 버전)")
+    except:
+        pass
 
-urls = st.text_area("URL 여러개 입력 (줄바꿈)")
+    return list(set(urls))[:num]
 
-if "report" not in st.session_state:
-    st.session_state.report = None
-
-if st.button("분석 시작"):
-    url_list = urls.split("\n")
-
+# ---------------------------
+# 데이터 생성
+# ---------------------------
+def auto_pipeline(keyword):
+    urls = collect_urls(keyword)
     data = []
 
-    for url in url_list:
-        text, imgs = crawl(url)
+    for u in urls:
+        result = analyze_url(u)
+        if result:
+            data.append(result)
 
-        layout, visual, tone = labeling(text)
-        complexity, media = analyze_html(url)
+    df = pd.DataFrame(data)
+    return df
 
-        img_result = "Unknown"
-        if imgs:
-            img_result = analyze_image(imgs[0])
+# ---------------------------
+# PDF 생성
+# ---------------------------
+def make_pdf(df):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=10)
 
-        data.append([layout, visual, tone, complexity, media, img_result])
+    for i, row in df.iterrows():
+        pdf.cell(200, 8, txt=str(row.values), ln=True)
 
-    df = pd.DataFrame(data, columns=["Layout", "Visual", "Tone", "Complexity", "Media", "Image"])
+    pdf.output("report.pdf")
 
-    df = clustering(df)
+# ---------------------------
+# 사이드바
+# ---------------------------
+with st.sidebar:
+    st.title("🎨 Design AI")
 
+    mode = st.radio("Mode", ["URL 분석", "자동 수집"])
+
+    if mode == "URL 분석":
+        url = st.text_input("URL 입력")
+
+    if mode == "자동 수집":
+        keyword = st.text_input("키워드 입력")
+
+    run = st.button("🚀 분석 시작")
+
+# ---------------------------
+# 메인 UI
+# ---------------------------
+st.title("AI Design Analyzer Dashboard")
+st.markdown("디자인을 자동 분석하고 인사이트를 제공합니다.")
+
+# ---------------------------
+# 실행
+# ---------------------------
+if run:
+    with st.spinner("분석 중..."):
+
+        if mode == "URL 분석":
+            result = analyze_url(url)
+            df = pd.DataFrame([result])
+
+        else:
+            df = auto_pipeline(keyword)
+
+    # ---------------------------
+    # Insight
+    # ---------------------------
+    st.markdown("## 🧠 Insight")
+
+    if not df.empty:
+        style = df["Style"].iloc[0]
+        layout = df["Layout"].iloc[0]
+        complexity = df["Complexity"].iloc[0]
+
+        st.write(f"""
+        이 디자인은 **{style} 스타일**이며  
+        **{layout} 레이아웃** 구조를 가지고 있습니다.  
+        복잡도는 **{complexity} 수준**입니다.
+        """)
+
+    # ---------------------------
+    # 요약 블록
+    # ---------------------------
+    st.markdown("## 📊 Summary")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        block("Style", df["Style"].iloc[0] if not df.empty else "-")
+
+    with col2:
+        block("Layout", df["Layout"].iloc[0] if not df.empty else "-")
+
+    with col3:
+        block("Complexity", df["Complexity"].iloc[0] if not df.empty else "-")
+
+    # ---------------------------
+    # 데이터 테이블
+    # ---------------------------
+    st.markdown("## 📄 Data")
     st.write(df)
 
-    fig = px.scatter(df, x="Layout", y="Visual", color="Cluster")
-    st.plotly_chart(fig)
+    # ---------------------------
+    # 차트
+    # ---------------------------
+    st.markdown("## 📈 Visualization")
 
-    cluster_summary = interpret_cluster(df)
-    trend = analyze_trend(df)
+    if not df.empty:
+        fig, ax = plt.subplots()
+        df["Layout"].value_counts().plot(kind="bar", ax=ax)
+        st.pyplot(fig)
 
-    report = "AI 디자인 분석 리포트 (고급)\n\n"
+    # ---------------------------
+    # 클러스터링
+    # ---------------------------
+    st.markdown("## 🧩 Clustering")
 
-    report += "[클러스터 분석]\n"
-    for k, v in cluster_summary.items():
-        report += f"Cluster {k}\n"
-        report += f"Layout: {v['Layout']}\n"
-        report += f"Visual: {v['Visual']}\n"
-        report += f"Tone: {v['Tone']}\n\n"
+    if not df.empty:
+        df["Complexity_num"] = df["Complexity"].map({
+            "Low": 1,
+            "Medium": 2,
+            "High": 3
+        })
 
-    report += "[트렌드]\n"
-    report += f"Layout: {trend['Layout']}\n"
-    report += f"Visual: {trend['Visual']}\n"
-    report += f"Tone: {trend['Tone']}\n"
+        if len(df) >= 3:
+            kmeans = KMeans(n_clusters=3, n_init=10)
+            df["Cluster"] = kmeans.fit_predict(df[["Complexity_num"]])
+            st.write(df)
 
-    st.session_state.report = report
+    # ---------------------------
+    # 다운로드
+    # ---------------------------
+    st.markdown("## 📥 Export")
 
-if st.session_state.report:
-    st.text(st.session_state.report)
+    st.download_button(
+        "CSV 다운로드",
+        df.to_csv(index=False),
+        "result.csv"
+    )
 
     if st.button("PDF 생성"):
-        pdf_file = create_pdf(st.session_state.report)
-
-        with open(pdf_file, "rb") as f:
-            st.download_button("PDF 다운로드", f, "report.pdf")
+        make_pdf(df)
+        st.success("PDF 생성 완료")
